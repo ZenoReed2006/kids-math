@@ -1,0 +1,70 @@
+name: Sync and deploy
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # every 6 hours
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  issues: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: xiaoyang111222/cn-math-taxonomy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: github-pages
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: check
+        run: |
+          new=$(git ls-remote "https://github.com/$UPSTREAM" refs/heads/main | cut -f1)
+          old=$(cat deployed-sha.txt 2>/dev/null || true)
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          if [ "$new" != "$old" ]; then echo "changed=true" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.check.outputs.changed == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          path: site
+          fetch-depth: 0
+
+      - if: steps.check.outputs.changed == 'true'
+        env:
+          OLD: ${{ steps.check.outputs.old }}
+        run: |
+          if [ -n "$OLD" ]; then range="$OLD..HEAD"; else range="-10"; fi
+          git -C site log --date=short --format='- %ad %s' $range | head -50 > notes.md
+          rm -rf site/.git site/screenshots site/tests
+
+      - if: steps.check.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - if: steps.check.outputs.changed == 'true'
+        uses: actions/deploy-pages@v4
+
+      - if: steps.check.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW: ${{ steps.check.outputs.new }}
+        run: |
+          echo "$NEW" > deployed-sha.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add deployed-sha.txt
+          git commit -m "Deployed upstream ${NEW:0:7}"
+          git push
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Site updated to ${NEW:0:7} ($(date +%F))" --body-file notes.md
